@@ -1,6 +1,6 @@
 name: flutter_easy_sdk
 description: Flutter SDK with common components for mobile projects
-version: 0.0.1
+version: 0.0.2
 homepage: https://github.com/olinyavod/flutter_easy_sdk
 
 environment:
@@ -10,6 +10,16 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+
+  # Camera
+  camerawesome: ^2.1.0
+
+  # State management
+  flutter_bloc: ^8.1.6
+  equatable: ^2.0.5
+
+  # Utils
+  path_provider: ^2.1.0
 
 dev_dependencies:
   flutter_test:
