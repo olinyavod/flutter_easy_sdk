@@ -21,6 +21,9 @@ dependencies:
   # Utils
   path_provider: ^2.1.0
 
+  # Image caching
+  cached_network_image: ^3.4.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
