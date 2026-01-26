@@ -7,7 +7,7 @@ import 'easy_image_viewer_state.dart';
 class EasyImageViewerCubit extends Cubit<EasyImageViewerState> {
   final EasyImageViewerConfig config;
 
-  EasyImageViewerCubit(this.config) : super(const EasyImageViewerLoading());
+  EasyImageViewerCubit(this.config) : super(const EasyImageViewerReady(scale: 1.0));
 
   /// Marks image loading as started.
   void startLoading() {

@@ -212,13 +212,13 @@ class _EasyImageViewerContentState extends State<_EasyImageViewerContent>
                 ),
               ),
 
-              // Close button (always visible)
-              if (widget.config.showCloseButton)
-                _buildCloseButton(context, iconColor),
-
               // Top actions (visible when controls are shown)
               if (state is EasyImageViewerReady && state.controlsVisible)
                 _buildTopActions(context, iconColor),
+
+              // Close button (always visible, rendered last to be on top)
+              if (widget.config.showCloseButton)
+                _buildCloseButton(context, iconColor),
 
               // Bottom info
               if (state is EasyImageViewerReady &&
@@ -403,27 +403,8 @@ class _EasyImageViewerContentState extends State<_EasyImageViewerContent>
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
             child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                // Spacer for close button (close button is always visible separately)
-                const SizedBox(width: 48),
-
-                // Title
-                if (widget.config.title != null)
-                  Expanded(
-                    child: Text(
-                      widget.config.title!,
-                      style: TextStyle(
-                        color: iconColor,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      textAlign: TextAlign.center,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-
-                // Action buttons
+                // Action buttons on the left
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -440,11 +421,28 @@ class _EasyImageViewerContentState extends State<_EasyImageViewerContent>
                         tooltip: widget.config.deleteTooltip ?? 'Delete',
                         onPressed: widget.onDelete,
                       ),
-                    if (!widget.config.showShareButton &&
-                        !widget.config.showDeleteButton)
-                      const SizedBox(width: 48),
                   ],
                 ),
+
+                // Title in center
+                if (widget.config.title != null)
+                  Expanded(
+                    child: Text(
+                      widget.config.title!,
+                      style: TextStyle(
+                        color: iconColor,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      textAlign: TextAlign.center,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  )
+                else
+                  const Spacer(),
+
+                // Spacer for close button on the right
+                const SizedBox(width: 48),
               ],
             ),
           ),
