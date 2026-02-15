@@ -9,3 +9,12 @@ export 'src/camera/camera.dart';
 
 // Image viewer module
 export 'src/image_viewer/image_viewer.dart';
+
+// Router utilities
+export 'src/router/router.dart';
+
+// Common widgets
+export 'src/widgets/widgets.dart';
+
+// Image picker
+export 'src/image_picker/image_picker.dart';
