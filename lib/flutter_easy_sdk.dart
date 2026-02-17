@@ -18,3 +18,6 @@ export 'src/widgets/widgets.dart';
 
 // Image picker
 export 'src/image_picker/image_picker.dart';
+
+// Attachment module
+export 'src/attachment/attachment.dart';
