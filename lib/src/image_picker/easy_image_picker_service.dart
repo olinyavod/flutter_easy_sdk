@@ -36,7 +36,7 @@ class EasyImagePickerService {
       maxHeight: 1024,
       imageQuality: 85,
     );
-    if (image == null || !context.mounted) return null;
+    if (image == null) return null;
     return File(image.path);
   }
 
@@ -49,7 +49,7 @@ class EasyImagePickerService {
       imageQuality: 85,
       preferredCameraDevice: CameraDevice.front,
     );
-    if (image == null || !context.mounted) return null;
+    if (image == null) return null;
     return File(image.path);
   }
 
