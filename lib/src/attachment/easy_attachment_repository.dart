@@ -1,3 +1,5 @@
+import 'package:dio/dio.dart';
+
 import 'easy_attachment_item.dart';
 
 /// Abstract interface for attachment upload/download operations.
@@ -8,11 +10,13 @@ abstract class EasyAttachmentRepository {
   Future<EasyAttachmentItem> uploadAttachment({
     required EasyAttachmentItem item,
     required String entityId,
+    String? scope,
+    CancelToken? cancelToken,
   });
 
   Future<List<EasyAttachmentItem>> getAttachments(String entityId);
 
-  Future<bool> deleteAttachment(String serverId);
+  Future<bool> deleteAttachment(String serverId, {String? entityId});
 
   Future<List<EasyAttachmentItem>> uploadBatch({
     required List<EasyAttachmentItem> items,

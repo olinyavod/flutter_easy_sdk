@@ -107,6 +107,9 @@ class EasyAttachmentGrid extends StatelessWidget {
                       onRetry: () => context
                           .read<EasyAttachmentBloc>()
                           .add(EasyRetryUpload(item.localId)),
+                      onCancel: () => context
+                          .read<EasyAttachmentBloc>()
+                          .add(EasyCancelUpload(item.localId)),
                     );
                   },
                 ),
@@ -360,6 +363,7 @@ class _EasyAttachmentTile extends StatefulWidget {
   final VoidCallback onLongPress;
   final VoidCallback onDelete;
   final VoidCallback onRetry;
+  final VoidCallback onCancel;
 
   const _EasyAttachmentTile({
     required this.item,
@@ -370,6 +374,7 @@ class _EasyAttachmentTile extends StatefulWidget {
     required this.onLongPress,
     required this.onDelete,
     required this.onRetry,
+    required this.onCancel,
   });
 
   @override
@@ -422,13 +427,38 @@ class _EasyAttachmentTileState extends State<_EasyAttachmentTile> {
                 if (widget.item.status == EasyUploadStatus.uploading)
                   Container(
                     color: Colors.black.withValues(alpha: 0.4),
-                    child: const Center(
+                    child: Center(
                       child: SizedBox(
-                        width: 24,
-                        height: 24,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
+                        width: 44,
+                        height: 44,
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            const SizedBox(
+                              width: 44,
+                              height: 44,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.5,
+                                color: Colors.white,
+                              ),
+                            ),
+                            GestureDetector(
+                              onTap: widget.onCancel,
+                              child: Container(
+                                width: 28,
+                                height: 28,
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.2),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(
+                                  Icons.close,
+                                  color: Colors.white,
+                                  size: 16,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ),
@@ -495,12 +525,21 @@ class _EasyAttachmentTileState extends State<_EasyAttachmentTile> {
   }
 
   Widget _buildContent(ThemeData theme) {
-    if (widget.item.isImage && widget.item.localPath != null) {
-      return Image.file(
-        File(widget.item.localPath!),
-        fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => _buildIconPlaceholder(theme),
-      );
+    if (widget.item.isImage) {
+      if (widget.item.localPath != null) {
+        return Image.file(
+          File(widget.item.localPath!),
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _buildIconPlaceholder(theme),
+        );
+      }
+      if (widget.item.remoteUrl != null) {
+        return Image.network(
+          widget.item.remoteUrl!,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _buildIconPlaceholder(theme),
+        );
+      }
     }
 
     return _buildIconPlaceholder(theme);

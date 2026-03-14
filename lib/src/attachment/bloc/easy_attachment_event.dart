@@ -65,3 +65,12 @@ class EasyRetryUpload extends EasyAttachmentEvent {
   @override
   List<Object?> get props => [localId];
 }
+
+class EasyCancelUpload extends EasyAttachmentEvent {
+  final String localId;
+
+  const EasyCancelUpload(this.localId);
+
+  @override
+  List<Object?> get props => [localId];
+}

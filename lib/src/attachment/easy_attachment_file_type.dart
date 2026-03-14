@@ -15,4 +15,22 @@ enum EasyAttachmentFileType {
       _ => other,
     };
   }
+
+  static EasyAttachmentFileType fromMime(String mime) {
+    final lower = mime.toLowerCase();
+    if (lower.startsWith('image/')) {
+      return image;
+    }
+    if (lower == 'application/pdf') {
+      return pdf;
+    }
+    if (lower.contains('msword') ||
+        lower.contains('wordprocessingml') ||
+        lower.contains('spreadsheetml') ||
+        lower.contains('ms-excel') ||
+        lower == 'text/plain') {
+      return doc;
+    }
+    return other;
+  }
 }

@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../easy_attachment_cache_service.dart';
@@ -13,11 +14,20 @@ class EasyAttachmentBloc
   final EasyAttachmentMode mode;
   final EasyAttachmentRepository _repository;
   final EasyAttachmentCacheService _cacheService;
+  final Map<String, CancelToken> _cancelTokens = {};
+
+  /// Максимальный размер файла в байтах. null — без ограничений.
+  final int? maxFileSize;
+
+  /// Сообщение об ошибке при превышении лимита.
+  final String Function(int maxSizeMb)? fileTooLargeMessage;
 
   EasyAttachmentBloc({
     required this.mode,
     required EasyAttachmentRepository repository,
     required EasyAttachmentCacheService cacheService,
+    this.maxFileSize,
+    this.fileTooLargeMessage,
   })  : _repository = repository,
         _cacheService = cacheService,
         super(const EasyAttachmentState()) {
@@ -27,6 +37,7 @@ class EasyAttachmentBloc
     on<EasyUploadAll>(_onUploadAll);
     on<EasyLoadExisting>(_onLoadExisting);
     on<EasyRetryUpload>(_onRetryUpload);
+    on<EasyCancelUpload>(_onCancelUpload);
   }
 
   Future<void> _onAddAttachment(
@@ -34,12 +45,34 @@ class EasyAttachmentBloc
     Emitter<EasyAttachmentState> emit,
   ) async {
     final cached = await _cacheService.cacheFile(event.file);
+
+    // Проверка размера файла
+    if (maxFileSize != null && cached.fileSize > maxFileSize!) {
+      final maxMb = maxFileSize! ~/ (1024 * 1024);
+      final message = fileTooLargeMessage?.call(maxMb) ??
+          'Файл слишком большой. Максимальный размер: $maxMb МБ';
+
+      // Удаляем закешированный файл
+      if (cached.localPath != null) {
+        await _cacheService.deleteCachedFile(cached.localPath!);
+      }
+
+      final errorItem = cached.copyWith(
+        status: EasyUploadStatus.error,
+        errorMessage: message,
+      );
+      final updatedItems = [errorItem, ...state.items];
+      emit(state.copyWith(items: updatedItems));
+      return;
+    }
+
     final updatedItems = [cached, ...state.items];
     emit(state.copyWith(items: updatedItems));
 
     if (mode is EasyImmediateMode) {
-      final entityId = (mode as EasyImmediateMode).entityId;
-      await _uploadSingle(cached, entityId, emit);
+      final immediateMode = mode as EasyImmediateMode;
+      await _uploadSingle(cached, immediateMode.entityId, emit,
+          scope: immediateMode.scope);
     }
   }
 
@@ -55,7 +88,10 @@ class EasyAttachmentBloc
 
     if (mode is EasyImmediateMode && item.serverId != null) {
       try {
-        await _repository.deleteAttachment(item.serverId!);
+        await _repository.deleteAttachment(
+          item.serverId!,
+          entityId: (mode as EasyImmediateMode).entityId,
+        );
       } catch (_) {
         // Ignore server deletion errors
       }
@@ -126,17 +162,37 @@ class EasyAttachmentBloc
     Emitter<EasyAttachmentState> emit,
   ) async {
     if (mode is! EasyImmediateMode) return;
-    final entityId = (mode as EasyImmediateMode).entityId;
+    final immediateMode = mode as EasyImmediateMode;
 
     final item = state.items.firstWhere((i) => i.localId == event.localId);
-    await _uploadSingle(item, entityId, emit);
+    await _uploadSingle(item, immediateMode.entityId, emit,
+        scope: immediateMode.scope);
+  }
+
+  void _onCancelUpload(
+    EasyCancelUpload event,
+    Emitter<EasyAttachmentState> emit,
+  ) {
+    final cancelToken = _cancelTokens.remove(event.localId);
+    cancelToken?.cancel('Upload cancelled by user');
+
+    final updatedItems = state.items
+        .map((i) => i.localId == event.localId
+            ? i.copyWith(status: EasyUploadStatus.cached, errorMessage: null)
+            : i)
+        .toList();
+    emit(state.copyWith(items: updatedItems));
   }
 
   Future<void> _uploadSingle(
     EasyAttachmentItem item,
     String entityId,
-    Emitter<EasyAttachmentState> emit,
-  ) async {
+    Emitter<EasyAttachmentState> emit, {
+    String? scope,
+  }) async {
+    final cancelToken = CancelToken();
+    _cancelTokens[item.localId] = cancelToken;
+
     var updatedItems = state.items
         .map((i) => i.localId == item.localId
             ? i.copyWith(status: EasyUploadStatus.uploading)
@@ -148,13 +204,32 @@ class EasyAttachmentBloc
       final uploaded = await _repository.uploadAttachment(
         item: item,
         entityId: entityId,
+        scope: scope,
+        cancelToken: cancelToken,
       );
+
+      _cancelTokens.remove(item.localId);
 
       updatedItems = state.items
           .map((i) => i.localId == item.localId ? uploaded : i)
           .toList();
       emit(state.copyWith(items: updatedItems));
+    } on DioException catch (e) {
+      _cancelTokens.remove(item.localId);
+      if (e.type == DioExceptionType.cancel) return;
+
+      updatedItems = state.items
+          .map((i) => i.localId == item.localId
+              ? i.copyWith(
+                  status: EasyUploadStatus.error,
+                  errorMessage: e.message,
+                )
+              : i)
+          .toList();
+      emit(state.copyWith(items: updatedItems));
     } catch (e) {
+      _cancelTokens.remove(item.localId);
+
       updatedItems = state.items
           .map((i) => i.localId == item.localId
               ? i.copyWith(
@@ -165,5 +240,14 @@ class EasyAttachmentBloc
           .toList();
       emit(state.copyWith(items: updatedItems));
     }
+  }
+
+  @override
+  Future<void> close() {
+    for (final token in _cancelTokens.values) {
+      token.cancel('BLoC closed');
+    }
+    _cancelTokens.clear();
+    return super.close();
   }
 }

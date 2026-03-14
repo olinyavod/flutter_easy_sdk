@@ -15,9 +15,10 @@ class EasyCachedMode extends EasyAttachmentMode {
 /// Files are uploaded to the server immediately upon addition.
 class EasyImmediateMode extends EasyAttachmentMode {
   final String entityId;
+  final String? scope;
 
-  const EasyImmediateMode({required this.entityId});
+  const EasyImmediateMode({required this.entityId, this.scope});
 
   @override
-  List<Object?> get props => [entityId];
+  List<Object?> get props => [entityId, scope];
 }
