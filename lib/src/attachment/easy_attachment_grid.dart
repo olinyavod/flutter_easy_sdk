@@ -29,7 +29,25 @@ class EasyAttachmentGrid extends StatelessWidget {
     final theme = Theme.of(context);
     final labels = config.labels;
 
-    return BlocBuilder<EasyAttachmentBloc, EasyAttachmentState>(
+    return BlocConsumer<EasyAttachmentBloc, EasyAttachmentState>(
+      listenWhen: (previous, current) =>
+          current.error != null && current.error != previous.error,
+      listener: (context, state) {
+        final snackTheme = theme.snackBarTheme;
+        final textColor = snackTheme.contentTextStyle?.color ??
+            theme.colorScheme.onError;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.error_outline, color: textColor, size: 22),
+                const SizedBox(width: 12),
+                Expanded(child: Text(state.error!)),
+              ],
+            ),
+          ),
+        );
+      },
       builder: (context, state) {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -100,7 +118,7 @@ class EasyAttachmentGrid extends StatelessWidget {
                       size: config.tileSize,
                       borderRadius: config.tileBorderRadius,
                       editable: editable,
-                      onTap: () => _openPreview(context, item),
+                      onTap: () => _onItemTap(context, item),
                       onLongPress: () => _showContextMenu(context, item),
                       onDelete: () =>
                           _confirmDelete(context, item.localId),
@@ -110,6 +128,9 @@ class EasyAttachmentGrid extends StatelessWidget {
                       onCancel: () => context
                           .read<EasyAttachmentBloc>()
                           .add(EasyCancelUpload(item.localId)),
+                      onCancelDownload: () => context
+                          .read<EasyAttachmentBloc>()
+                          .add(EasyCancelDownload(item.localId)),
                     );
                   },
                 ),
@@ -120,8 +141,15 @@ class EasyAttachmentGrid extends StatelessWidget {
     );
   }
 
+  void _onItemTap(BuildContext context, EasyAttachmentItem item) {
+    if (item.isImage) {
+      _openPreview(context, item);
+    } else {
+      _openExternal(context, item);
+    }
+  }
+
   void _openPreview(BuildContext context, EasyAttachmentItem item) {
-    if (!item.isImage) return;
 
     final bloc = context.read<EasyAttachmentBloc>();
     final allImages = bloc.state.items.where((i) => i.isImage).toList();
@@ -132,14 +160,17 @@ class EasyAttachmentGrid extends StatelessWidget {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => EasyAttachmentGalleryPage(
-          images: allImages,
-          initialIndex: initialIndex,
-          editable: editable,
-          config: config,
-          onDelete: (localId) {
-            bloc.add(EasyRemoveAttachment(localId));
-          },
+        builder: (_) => BlocProvider.value(
+          value: bloc,
+          child: EasyAttachmentGalleryPage(
+            images: allImages,
+            initialIndex: initialIndex,
+            editable: editable,
+            config: config,
+            onDelete: (localId) {
+              bloc.add(EasyRemoveAttachment(localId));
+            },
+          ),
         ),
       ),
     );
@@ -221,7 +252,18 @@ class EasyAttachmentGrid extends StatelessWidget {
                   subtitle: labels.shareSubtitle,
                   onTap: () {
                     Navigator.pop(sheetContext);
-                    _shareFile(item);
+                    _shareFile(context, item);
+                  },
+                ),
+              if (config.onOpenExternal != null)
+                EasyBottomSheetWidgets.menuItem(
+                  theme: theme,
+                  icon: Icons.open_in_new,
+                  title: labels.openExternalTitle,
+                  subtitle: labels.openExternalSubtitle,
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    _openExternal(context, item);
                   },
                 ),
               if (editable)
@@ -248,10 +290,35 @@ class EasyAttachmentGrid extends StatelessWidget {
     );
   }
 
-  void _shareFile(EasyAttachmentItem item) {
-    final path = item.localPath;
-    if (path == null) return;
-    config.onShare?.call(path);
+  void _shareFile(BuildContext context, EasyAttachmentItem item) {
+    if (item.localPath != null) {
+      config.onShare?.call(item.localPath!);
+      return;
+    }
+    // Need to download first — trigger download, share on completion
+    final bloc = context.read<EasyAttachmentBloc>();
+    bloc.onDownloadComplete = (localId, path) {
+      if (localId == item.localId) {
+        config.onShare?.call(path);
+        bloc.onDownloadComplete = null;
+      }
+    };
+    bloc.add(EasyDownloadFile(item.localId));
+  }
+
+  void _openExternal(BuildContext context, EasyAttachmentItem item) {
+    if (item.localPath != null) {
+      config.onOpenExternal?.call(item.localPath!);
+      return;
+    }
+    final bloc = context.read<EasyAttachmentBloc>();
+    bloc.onDownloadComplete = (localId, path) {
+      if (localId == item.localId) {
+        config.onOpenExternal?.call(path);
+        bloc.onDownloadComplete = null;
+      }
+    };
+    bloc.add(EasyDownloadFile(item.localId));
   }
 
   void _showPickerSheet(BuildContext context) {
@@ -364,6 +431,7 @@ class _EasyAttachmentTile extends StatefulWidget {
   final VoidCallback onDelete;
   final VoidCallback onRetry;
   final VoidCallback onCancel;
+  final VoidCallback onCancelDownload;
 
   const _EasyAttachmentTile({
     required this.item,
@@ -375,6 +443,7 @@ class _EasyAttachmentTile extends StatefulWidget {
     required this.onDelete,
     required this.onRetry,
     required this.onCancel,
+    required this.onCancelDownload,
   });
 
   @override
@@ -424,45 +493,13 @@ class _EasyAttachmentTileState extends State<_EasyAttachmentTile> {
               fit: StackFit.expand,
               children: [
                 _buildContent(theme),
+                // Upload overlay
                 if (widget.item.status == EasyUploadStatus.uploading)
-                  Container(
-                    color: Colors.black.withValues(alpha: 0.4),
-                    child: Center(
-                      child: SizedBox(
-                        width: 44,
-                        height: 44,
-                        child: Stack(
-                          alignment: Alignment.center,
-                          children: [
-                            const SizedBox(
-                              width: 44,
-                              height: 44,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2.5,
-                                color: Colors.white,
-                              ),
-                            ),
-                            GestureDetector(
-                              onTap: widget.onCancel,
-                              child: Container(
-                                width: 28,
-                                height: 28,
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withValues(alpha: 0.2),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: const Icon(
-                                  Icons.close,
-                                  color: Colors.white,
-                                  size: 16,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
+                  _buildUploadOverlay(),
+                // Download overlay (Telegram-style)
+                if (widget.item.status == EasyUploadStatus.downloading)
+                  _buildDownloadOverlay(theme),
+                // Error overlay
                 if (widget.item.status == EasyUploadStatus.error)
                   Container(
                     color: Colors.black.withValues(alpha: 0.5),
@@ -473,8 +510,10 @@ class _EasyAttachmentTileState extends State<_EasyAttachmentTile> {
                       ),
                     ),
                   ),
+                // Delete button
                 if (widget.editable &&
-                    widget.item.status != EasyUploadStatus.uploading)
+                    widget.item.status != EasyUploadStatus.uploading &&
+                    widget.item.status != EasyUploadStatus.downloading)
                   Positioned(
                     top: 2,
                     right: 2,
@@ -495,6 +534,7 @@ class _EasyAttachmentTileState extends State<_EasyAttachmentTile> {
                       ),
                     ),
                   ),
+                // File name for non-image files
                 if (!widget.item.isImage)
                   Positioned(
                     bottom: 0,
@@ -518,6 +558,93 @@ class _EasyAttachmentTileState extends State<_EasyAttachmentTile> {
                   ),
               ],
             ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildUploadOverlay() {
+    return Container(
+      color: Colors.black.withValues(alpha: 0.4),
+      child: Center(
+        child: SizedBox(
+          width: 44,
+          height: 44,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              const SizedBox(
+                width: 44,
+                height: 44,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.5,
+                  color: Colors.white,
+                ),
+              ),
+              GestureDetector(
+                onTap: widget.onCancel,
+                child: Container(
+                  width: 28,
+                  height: 28,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.2),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.close,
+                    color: Colors.white,
+                    size: 16,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Telegram-style download overlay with circular progress and cancel button.
+  Widget _buildDownloadOverlay(ThemeData theme) {
+    final progress = widget.item.downloadProgress;
+
+    return Container(
+      color: Colors.black.withValues(alpha: 0.4),
+      child: Center(
+        child: SizedBox(
+          width: 44,
+          height: 44,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              SizedBox(
+                width: 44,
+                height: 44,
+                child: CircularProgressIndicator(
+                  value: progress > 0 ? progress : null,
+                  strokeWidth: 2.5,
+                  color: Colors.white,
+                  backgroundColor: Colors.white.withValues(alpha: 0.2),
+                ),
+              ),
+              GestureDetector(
+                onTap: widget.onCancelDownload,
+                child: Container(
+                  width: 28,
+                  height: 28,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.2),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.close,
+                    color: Colors.white,
+                    size: 16,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),

@@ -74,3 +74,25 @@ class EasyCancelUpload extends EasyAttachmentEvent {
   @override
   List<Object?> get props => [localId];
 }
+
+/// Request to download a remote file to local cache.
+/// After download completes, [onComplete] is called with the local path.
+class EasyDownloadFile extends EasyAttachmentEvent {
+  final String localId;
+
+  const EasyDownloadFile(this.localId);
+
+  @override
+  List<Object?> get props => [localId];
+}
+
+/// Cancel an ongoing file download.
+class EasyCancelDownload extends EasyAttachmentEvent {
+  final String localId;
+
+  const EasyCancelDownload(this.localId);
+
+  @override
+  List<Object?> get props => [localId];
+}
+

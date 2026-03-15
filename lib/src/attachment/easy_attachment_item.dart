@@ -13,6 +13,7 @@ class EasyAttachmentItem extends Equatable {
   final int fileSize;
   final EasyUploadStatus status;
   final String? errorMessage;
+  final double downloadProgress;
 
   const EasyAttachmentItem({
     required this.localId,
@@ -24,6 +25,7 @@ class EasyAttachmentItem extends Equatable {
     required this.fileSize,
     this.status = EasyUploadStatus.cached,
     this.errorMessage,
+    this.downloadProgress = 0.0,
   });
 
   bool get isImage => type == EasyAttachmentFileType.image;
@@ -36,6 +38,9 @@ class EasyAttachmentItem extends Equatable {
     return '${(fileSize / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
+  /// Whether the file is available locally (cached or uploaded from device).
+  bool get isLocallyAvailable => localPath != null;
+
   EasyAttachmentItem copyWith({
     String? localId,
     String? serverId,
@@ -46,6 +51,7 @@ class EasyAttachmentItem extends Equatable {
     int? fileSize,
     EasyUploadStatus? status,
     String? errorMessage,
+    double? downloadProgress,
   }) {
     return EasyAttachmentItem(
       localId: localId ?? this.localId,
@@ -57,6 +63,7 @@ class EasyAttachmentItem extends Equatable {
       fileSize: fileSize ?? this.fileSize,
       status: status ?? this.status,
       errorMessage: errorMessage ?? this.errorMessage,
+      downloadProgress: downloadProgress ?? this.downloadProgress,
     );
   }
 
@@ -71,6 +78,7 @@ class EasyAttachmentItem extends Equatable {
       fileSize: json['file_size'] as int,
       status: EasyUploadStatus.values.byName(json['status'] as String),
       errorMessage: json['error_message'] as String?,
+      downloadProgress: (json['download_progress'] as num?)?.toDouble() ?? 0.0,
     );
   }
 
@@ -85,6 +93,7 @@ class EasyAttachmentItem extends Equatable {
       'file_size': fileSize,
       'status': status.name,
       'error_message': errorMessage,
+      'download_progress': downloadProgress,
     };
   }
 
@@ -99,5 +108,6 @@ class EasyAttachmentItem extends Equatable {
         fileSize,
         status,
         errorMessage,
+        downloadProgress,
       ];
 }

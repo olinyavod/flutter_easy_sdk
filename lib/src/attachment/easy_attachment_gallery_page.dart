@@ -1,9 +1,14 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 
+import 'bloc/easy_attachment_bloc.dart';
+import 'bloc/easy_attachment_event.dart';
+import 'bloc/easy_attachment_state.dart';
 import 'easy_attachment_config.dart';
 import 'easy_attachment_item.dart';
+import 'easy_attachment_upload_status.dart';
 
 class EasyAttachmentGalleryPage extends StatefulWidget {
   final List<EasyAttachmentItem> images;
@@ -63,7 +68,6 @@ class _EasyAttachmentGalleryPageState extends State<EasyAttachmentGalleryPage> {
         Overlay.of(context).context.findRenderObject() as RenderBox?;
     if (overlay == null) return;
 
-    // Anchor below the menu icon (top-left area)
     const menuOffset = Offset(16, 80);
     final position = RelativeRect.fromLTRB(
       menuOffset.dx,
@@ -125,15 +129,36 @@ class _EasyAttachmentGalleryPageState extends State<EasyAttachmentGalleryPage> {
   }
 
   void _shareCurrentFile() {
-    final path = _currentItem.localPath;
-    if (path == null) return;
-    _config.onShare?.call(path);
+    final item = _currentItem;
+    if (item.localPath != null) {
+      _config.onShare?.call(item.localPath!);
+      return;
+    }
+    // Download then share
+    final bloc = context.read<EasyAttachmentBloc>();
+    bloc.onDownloadComplete = (localId, path) {
+      if (localId == item.localId) {
+        _config.onShare?.call(path);
+        bloc.onDownloadComplete = null;
+      }
+    };
+    bloc.add(EasyDownloadFile(item.localId));
   }
 
   void _openInExternalApp() {
-    final path = _currentItem.localPath;
-    if (path == null) return;
-    _config.onOpenExternal?.call(path);
+    final item = _currentItem;
+    if (item.localPath != null) {
+      _config.onOpenExternal?.call(item.localPath!);
+      return;
+    }
+    final bloc = context.read<EasyAttachmentBloc>();
+    bloc.onDownloadComplete = (localId, path) {
+      if (localId == item.localId) {
+        _config.onOpenExternal?.call(path);
+        bloc.onDownloadComplete = null;
+      }
+    };
+    bloc.add(EasyDownloadFile(item.localId));
   }
 
   void _deleteCurrentPhoto() {
@@ -175,86 +200,165 @@ class _EasyAttachmentGalleryPageState extends State<EasyAttachmentGalleryPage> {
 
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Stack(
-        children: [
-          PageView.builder(
-            controller: _pageController,
-            itemCount: _images.length,
-            physics: _isZoomed
-                ? const NeverScrollableScrollPhysics()
-                : const PageScrollPhysics(),
-            onPageChanged: (index) => setState(() => _currentIndex = index),
-            itemBuilder: (context, index) {
-              final item = _images[index];
-              return _EasyZoomableImage(
-                item: item,
-                onZoomChanged: _onZoomChanged,
-              );
-            },
-          ),
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: Container(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    Colors.black.withValues(alpha: 0.6),
-                    Colors.transparent,
-                  ],
-                ),
-              ),
-              child: SafeArea(
-                bottom: false,
-                child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                  child: Row(
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.more_vert, color: Colors.white),
-                        onPressed: _showGalleryMenu,
-                      ),
-                      Expanded(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              _images[_currentIndex].fileName,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
+      body: BlocListener<EasyAttachmentBloc, EasyAttachmentState>(
+        listenWhen: (prev, curr) {
+          // Listen for download state changes on current item
+          final prevItem = prev.items
+              .where((i) => i.localId == _currentItem.localId)
+              .firstOrNull;
+          final currItem = curr.items
+              .where((i) => i.localId == _currentItem.localId)
+              .firstOrNull;
+          return prevItem?.status != currItem?.status ||
+              prevItem?.downloadProgress != currItem?.downloadProgress;
+        },
+        listener: (context, state) {
+          // Update local images list from bloc state
+          for (int i = 0; i < _images.length; i++) {
+            final updated = state.items
+                .where((si) => si.localId == _images[i].localId)
+                .firstOrNull;
+            if (updated != null) {
+              _images[i] = updated;
+            }
+          }
+          setState(() {});
+        },
+        child: Stack(
+          children: [
+            PageView.builder(
+              controller: _pageController,
+              itemCount: _images.length,
+              physics: _isZoomed
+                  ? const NeverScrollableScrollPhysics()
+                  : const PageScrollPhysics(),
+              onPageChanged: (index) => setState(() => _currentIndex = index),
+              itemBuilder: (context, index) {
+                final item = _images[index];
+                return Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    _EasyZoomableImage(
+                      item: item,
+                      onZoomChanged: _onZoomChanged,
+                    ),
+                    // Telegram-style download overlay in gallery
+                    if (item.status == EasyUploadStatus.downloading)
+                      Container(
+                        color: Colors.black.withValues(alpha: 0.3),
+                        child: Center(
+                          child: SizedBox(
+                            width: 64,
+                            height: 64,
+                            child: Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                SizedBox(
+                                  width: 64,
+                                  height: 64,
+                                  child: CircularProgressIndicator(
+                                    value: item.downloadProgress > 0
+                                        ? item.downloadProgress
+                                        : null,
+                                    strokeWidth: 3,
+                                    color: Colors.white,
+                                    backgroundColor:
+                                        Colors.white.withValues(alpha: 0.2),
+                                  ),
+                                ),
+                                GestureDetector(
+                                  onTap: () => context
+                                      .read<EasyAttachmentBloc>()
+                                      .add(EasyCancelDownload(item.localId)),
+                                  child: Container(
+                                    width: 40,
+                                    height: 40,
+                                    decoration: BoxDecoration(
+                                      color:
+                                          Colors.white.withValues(alpha: 0.2),
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: const Icon(
+                                      Icons.close,
+                                      color: Colors.white,
+                                      size: 24,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
-                            const SizedBox(height: 2),
-                            Text(
-                              labels.galleryCounter(
-                                  _currentIndex + 1, _images.length),
-                              style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.7),
-                                fontSize: 13,
-                              ),
-                            ),
-                          ],
+                          ),
                         ),
                       ),
-                      IconButton(
-                        icon: const Icon(Icons.close, color: Colors.white),
-                        onPressed: () => Navigator.pop(context),
-                      ),
+                  ],
+                );
+              },
+            ),
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.black.withValues(alpha: 0.6),
+                      Colors.transparent,
                     ],
+                  ),
+                ),
+                child: SafeArea(
+                  bottom: false,
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                    child: Row(
+                      children: [
+                        IconButton(
+                          icon:
+                              const Icon(Icons.more_vert, color: Colors.white),
+                          onPressed: _showGalleryMenu,
+                        ),
+                        Expanded(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                _images[_currentIndex].fileName,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                labels.galleryCounter(
+                                    _currentIndex + 1, _images.length),
+                                style: TextStyle(
+                                  color: Colors.white.withValues(alpha: 0.7),
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, color: Colors.white),
+                          onPressed: () => Navigator.pop(context),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

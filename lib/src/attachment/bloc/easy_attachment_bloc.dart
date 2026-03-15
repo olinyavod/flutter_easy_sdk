@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
@@ -9,12 +11,32 @@ import '../easy_attachment_upload_status.dart';
 import 'easy_attachment_event.dart';
 import 'easy_attachment_state.dart';
 
+/// Internal sealed type for download stream events.
+sealed class _DownloadUpdate {}
+
+class _DownloadProgress extends _DownloadUpdate {
+  final double progress;
+  _DownloadProgress(this.progress);
+}
+
+class _DownloadDone extends _DownloadUpdate {
+  final String localPath;
+  _DownloadDone(this.localPath);
+}
+
+class _DownloadError extends _DownloadUpdate {
+  final Object error;
+  final bool cancelled;
+  _DownloadError(this.error, {this.cancelled = false});
+}
+
 class EasyAttachmentBloc
     extends Bloc<EasyAttachmentEvent, EasyAttachmentState> {
   final EasyAttachmentMode mode;
   final EasyAttachmentRepository _repository;
   final EasyAttachmentCacheService _cacheService;
   final Map<String, CancelToken> _cancelTokens = {};
+  final Map<String, CancelToken> _downloadCancelTokens = {};
 
   /// Максимальный размер файла в байтах. null — без ограничений.
   final int? maxFileSize;
@@ -22,12 +44,16 @@ class EasyAttachmentBloc
   /// Сообщение об ошибке при превышении лимита.
   final String Function(int maxSizeMb)? fileTooLargeMessage;
 
+  /// Called when a file download completes successfully.
+  void Function(String localId, String localPath)? onDownloadComplete;
+
   EasyAttachmentBloc({
     required this.mode,
     required EasyAttachmentRepository repository,
     required EasyAttachmentCacheService cacheService,
     this.maxFileSize,
     this.fileTooLargeMessage,
+    this.onDownloadComplete,
   })  : _repository = repository,
         _cacheService = cacheService,
         super(const EasyAttachmentState()) {
@@ -38,6 +64,17 @@ class EasyAttachmentBloc
     on<EasyLoadExisting>(_onLoadExisting);
     on<EasyRetryUpload>(_onRetryUpload);
     on<EasyCancelUpload>(_onCancelUpload);
+    on<EasyDownloadFile>(_onDownloadFile);
+    on<EasyCancelDownload>(_onCancelDownload);
+  }
+
+  List<EasyAttachmentItem> _updateItem(
+    String localId,
+    EasyAttachmentItem Function(EasyAttachmentItem) updater,
+  ) {
+    return state.items
+        .map((i) => i.localId == localId ? updater(i) : i)
+        .toList();
   }
 
   Future<void> _onAddAttachment(
@@ -46,28 +83,20 @@ class EasyAttachmentBloc
   ) async {
     final cached = await _cacheService.cacheFile(event.file);
 
-    // Проверка размера файла
     if (maxFileSize != null && cached.fileSize > maxFileSize!) {
       final maxMb = maxFileSize! ~/ (1024 * 1024);
       final message = fileTooLargeMessage?.call(maxMb) ??
           'Файл слишком большой. Максимальный размер: $maxMb МБ';
 
-      // Удаляем закешированный файл
       if (cached.localPath != null) {
         await _cacheService.deleteCachedFile(cached.localPath!);
       }
 
-      final errorItem = cached.copyWith(
-        status: EasyUploadStatus.error,
-        errorMessage: message,
-      );
-      final updatedItems = [errorItem, ...state.items];
-      emit(state.copyWith(items: updatedItems));
+      emit(state.copyWith(error: message));
       return;
     }
 
-    final updatedItems = [cached, ...state.items];
-    emit(state.copyWith(items: updatedItems));
+    emit(state.copyWith(items: [cached, ...state.items]));
 
     if (mode is EasyImmediateMode) {
       final immediateMode = mode as EasyImmediateMode;
@@ -92,9 +121,7 @@ class EasyAttachmentBloc
           item.serverId!,
           entityId: (mode as EasyImmediateMode).entityId,
         );
-      } catch (_) {
-        // Ignore server deletion errors
-      }
+      } catch (_) {}
     }
 
     final updatedItems =
@@ -176,12 +203,140 @@ class EasyAttachmentBloc
     final cancelToken = _cancelTokens.remove(event.localId);
     cancelToken?.cancel('Upload cancelled by user');
 
-    final updatedItems = state.items
-        .map((i) => i.localId == event.localId
-            ? i.copyWith(status: EasyUploadStatus.cached, errorMessage: null)
-            : i)
-        .toList();
-    emit(state.copyWith(items: updatedItems));
+    emit(state.copyWith(
+      items: _updateItem(
+          event.localId,
+          (i) =>
+              i.copyWith(status: EasyUploadStatus.cached, errorMessage: null)),
+    ));
+  }
+
+  Stream<_DownloadUpdate> _downloadStream({
+    required String remoteUrl,
+    required String fileName,
+    required CancelToken cancelToken,
+  }) async* {
+    final controller = StreamController<_DownloadUpdate>();
+
+    final downloadFuture = _cacheService
+        .downloadAndCache(
+      remoteUrl: remoteUrl,
+      fileName: fileName,
+      cancelToken: cancelToken,
+      onProgress: (progress) {
+        if (!controller.isClosed) {
+          controller.add(_DownloadProgress(progress));
+        }
+      },
+    )
+        .then((path) {
+      if (!controller.isClosed) {
+        controller.add(_DownloadDone(path));
+        controller.close();
+      }
+    }).catchError((Object e) {
+      if (!controller.isClosed) {
+        final cancelled =
+            e is DioException && e.type == DioExceptionType.cancel;
+        controller.add(_DownloadError(e, cancelled: cancelled));
+        controller.close();
+      }
+    });
+
+    yield* controller.stream;
+    await downloadFuture.catchError((_) {});
+  }
+
+  Future<void> _onDownloadFile(
+    EasyDownloadFile event,
+    Emitter<EasyAttachmentState> emit,
+  ) async {
+    final item = state.items.firstWhere((i) => i.localId == event.localId);
+
+    // Already have local file
+    if (item.localPath != null) {
+      onDownloadComplete?.call(item.localId, item.localPath!);
+      return;
+    }
+
+    if (item.remoteUrl == null) return;
+
+    // Check if already cached
+    final existingPath =
+        await _cacheService.getCachedPath(item.remoteUrl!, item.fileName);
+    if (existingPath != null) {
+      emit(state.copyWith(
+        items: _updateItem(event.localId,
+            (i) => i.copyWith(localPath: existingPath, downloadProgress: 1.0)),
+      ));
+      onDownloadComplete?.call(item.localId, existingPath);
+      return;
+    }
+
+    // Start downloading
+    final cancelToken = CancelToken();
+    _downloadCancelTokens[event.localId] = cancelToken;
+
+    emit(state.copyWith(
+      items: _updateItem(
+          event.localId,
+          (i) => i.copyWith(
+              status: EasyUploadStatus.downloading, downloadProgress: 0.0)),
+    ));
+
+    String? completedPath;
+
+    await emit.forEach<_DownloadUpdate>(
+      _downloadStream(
+        remoteUrl: item.remoteUrl!,
+        fileName: item.fileName,
+        cancelToken: cancelToken,
+      ),
+      onData: (update) {
+        switch (update) {
+          case _DownloadProgress(:final progress):
+            return state.copyWith(
+              items: _updateItem(event.localId,
+                  (i) => i.copyWith(downloadProgress: progress)),
+            );
+          case _DownloadDone(:final localPath):
+            _downloadCancelTokens.remove(event.localId);
+            completedPath = localPath;
+            return state.copyWith(
+              items: _updateItem(
+                  event.localId,
+                  (i) => i.copyWith(
+                        localPath: localPath,
+                        status: EasyUploadStatus.uploaded,
+                        downloadProgress: 1.0,
+                      )),
+            );
+          case _DownloadError(:final cancelled):
+            _downloadCancelTokens.remove(event.localId);
+            return state.copyWith(
+              items: _updateItem(
+                  event.localId,
+                  (i) => i.copyWith(
+                        status: EasyUploadStatus.uploaded,
+                        downloadProgress: 0.0,
+                        errorMessage: cancelled ? null : update.error.toString(),
+                      )),
+            );
+        }
+      },
+    );
+
+    if (completedPath != null) {
+      onDownloadComplete?.call(event.localId, completedPath!);
+    }
+  }
+
+  void _onCancelDownload(
+    EasyCancelDownload event,
+    Emitter<EasyAttachmentState> emit,
+  ) {
+    final cancelToken = _downloadCancelTokens.remove(event.localId);
+    cancelToken?.cancel('Download cancelled by user');
   }
 
   Future<void> _uploadSingle(
@@ -193,12 +348,10 @@ class EasyAttachmentBloc
     final cancelToken = CancelToken();
     _cancelTokens[item.localId] = cancelToken;
 
-    var updatedItems = state.items
-        .map((i) => i.localId == item.localId
-            ? i.copyWith(status: EasyUploadStatus.uploading)
-            : i)
-        .toList();
-    emit(state.copyWith(items: updatedItems));
+    emit(state.copyWith(
+      items: _updateItem(
+          item.localId, (i) => i.copyWith(status: EasyUploadStatus.uploading)),
+    ));
 
     try {
       final uploaded = await _repository.uploadAttachment(
@@ -210,35 +363,34 @@ class EasyAttachmentBloc
 
       _cancelTokens.remove(item.localId);
 
-      updatedItems = state.items
-          .map((i) => i.localId == item.localId ? uploaded : i)
-          .toList();
-      emit(state.copyWith(items: updatedItems));
+      emit(state.copyWith(
+        items: state.items
+            .map((i) => i.localId == item.localId ? uploaded : i)
+            .toList(),
+      ));
     } on DioException catch (e) {
       _cancelTokens.remove(item.localId);
       if (e.type == DioExceptionType.cancel) return;
 
-      updatedItems = state.items
-          .map((i) => i.localId == item.localId
-              ? i.copyWith(
+      emit(state.copyWith(
+        items: _updateItem(
+            item.localId,
+            (i) => i.copyWith(
                   status: EasyUploadStatus.error,
                   errorMessage: e.message,
-                )
-              : i)
-          .toList();
-      emit(state.copyWith(items: updatedItems));
+                )),
+      ));
     } catch (e) {
       _cancelTokens.remove(item.localId);
 
-      updatedItems = state.items
-          .map((i) => i.localId == item.localId
-              ? i.copyWith(
+      emit(state.copyWith(
+        items: _updateItem(
+            item.localId,
+            (i) => i.copyWith(
                   status: EasyUploadStatus.error,
                   errorMessage: e.toString(),
-                )
-              : i)
-          .toList();
-      emit(state.copyWith(items: updatedItems));
+                )),
+      ));
     }
   }
 
@@ -248,6 +400,10 @@ class EasyAttachmentBloc
       token.cancel('BLoC closed');
     }
     _cancelTokens.clear();
+    for (final token in _downloadCancelTokens.values) {
+      token.cancel('BLoC closed');
+    }
+    _downloadCancelTokens.clear();
     return super.close();
   }
 }
