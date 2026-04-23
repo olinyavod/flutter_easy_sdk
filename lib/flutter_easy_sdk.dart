@@ -21,3 +21,6 @@ export 'src/image_picker/image_picker.dart';
 
 // Attachment module
 export 'src/attachment/attachment.dart';
+
+// Share module
+export 'src/share/share.dart';
