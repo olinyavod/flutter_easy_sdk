@@ -54,6 +54,12 @@ class EasyCameraPage extends StatelessWidget {
   /// Use this to persist settings.
   final OnSettingsChanged? onSettingsChanged;
 
+  /// Optional owned destination for photos. Null keeps the default temp path.
+  final CaptureRequestBuilder? photoPathBuilder;
+
+  /// Optional shutter for callers that must await the actual capture operation.
+  final Widget Function(BuildContext, CameraState)? captureButtonBuilder;
+
   const EasyCameraPage({
     super.key,
     this.config = const EasyCameraConfig(),
@@ -63,6 +69,8 @@ class EasyCameraPage extends StatelessWidget {
     this.onOpenSettings,
     this.initialSettings,
     this.onSettingsChanged,
+    this.photoPathBuilder,
+    this.captureButtonBuilder,
   });
 
   @override
@@ -76,6 +84,8 @@ class EasyCameraPage extends StatelessWidget {
         onError: onError,
         onOpenSettings: onOpenSettings,
         onSettingsChanged: onSettingsChanged,
+        photoPathBuilder: photoPathBuilder,
+        captureButtonBuilder: captureButtonBuilder,
       ),
     );
   }
@@ -88,6 +98,8 @@ class _EasyCameraPageContent extends StatefulWidget {
   final void Function(Object error)? onError;
   final VoidCallback? onOpenSettings;
   final OnSettingsChanged? onSettingsChanged;
+  final CaptureRequestBuilder? photoPathBuilder;
+  final Widget Function(BuildContext, CameraState)? captureButtonBuilder;
 
   const _EasyCameraPageContent({
     required this.config,
@@ -96,6 +108,8 @@ class _EasyCameraPageContent extends StatefulWidget {
     this.onError,
     this.onOpenSettings,
     this.onSettingsChanged,
+    this.photoPathBuilder,
+    this.captureButtonBuilder,
   });
 
   @override
@@ -209,19 +223,21 @@ class _EasyCameraPageContentState extends State<_EasyCameraPageContent> {
     final initialCamera = initialSettings?.cameraPosition ?? widget.config.initialCamera;
 
     return CameraAwesomeBuilder.awesome(
+      enablePhysicalButton: false,
       previewFit: CameraPreviewFit.fitWidth,
       theme: AwesomeTheme(
         bottomActionsBackgroundColor: Colors.transparent,
       ),
       saveConfig: SaveConfig.photo(
-        pathBuilder: (sensors) async {
-          final tempDir = await getTemporaryDirectory();
-          final timestamp = DateTime.now().millisecondsSinceEpoch;
-          return SingleCaptureRequest(
-            '${tempDir.path}/photo_$timestamp.jpg',
-            sensors.first,
-          );
-        },
+        pathBuilder: widget.photoPathBuilder ??
+            (sensors) async {
+              final tempDir = await getTemporaryDirectory();
+              final timestamp = DateTime.now().millisecondsSinceEpoch;
+              return SingleCaptureRequest(
+                '${tempDir.path}/photo_$timestamp.jpg',
+                sensors.first,
+              );
+            },
       ),
       sensorConfig: SensorConfig.single(
         sensor: Sensor.position(initialCamera),
@@ -300,12 +316,7 @@ class _EasyCameraPageContentState extends State<_EasyCameraPageContent> {
     final cubit = context.read<EasyCameraCubit>();
 
     return Padding(
-      padding: EdgeInsets.only(
-        top: MediaQuery.of(context).padding.top + 8,
-        left: 16,
-        right: 16,
-        bottom: 8,
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
@@ -325,18 +336,28 @@ class _EasyCameraPageContentState extends State<_EasyCameraPageContent> {
 
           // Title
           if (widget.config.title != null)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              decoration: BoxDecoration(
-                color: Colors.black.withAlpha(100),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Text(
-                widget.config.title!,
-                style: TextStyle(
-                  color: iconColor,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w600,
+            Flexible(
+              child: Semantics(
+                label: widget.config.title,
+                header: true,
+                excludeSemantics: true,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withAlpha(100),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    widget.config.title!,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: iconColor,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -419,9 +440,10 @@ class _EasyCameraPageContentState extends State<_EasyCameraPageContent> {
                   const SizedBox(width: 48),
 
                   // Capture button
-                  _CaptureButton(
-                    state: state,
-                  ),
+                  widget.captureButtonBuilder?.call(context, state) ??
+                      _CaptureButton(
+                        state: state,
+                      ),
 
                   // Switch camera button
                   if (widget.config.showSwitchCamera)
